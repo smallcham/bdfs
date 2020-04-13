@@ -22,6 +22,7 @@ class BDfs(pyfuse3.Operations):
     def init(self):
         super(BDfs).__init__()
         self.fs = BDPanClient()
+        self.fs.process_download_file()
         self.files = []
 
     async def lookup(self, parent_inode, name, ctx):
@@ -105,7 +106,6 @@ class BDfs(pyfuse3.Operations):
             return self.fs.download(f, off, size)
 
     async def write(self, fh, off, buf):
-
         return await super().write(fh, off, buf)
 
     async def flush(self, fh):

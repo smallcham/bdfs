@@ -130,3 +130,10 @@ class DownloadInfo:
     def touch_tmp_size(self):
         self.tmp_size += self.block
         self.touch = datetime.now().timestamp()
+
+
+class TaskInfo:
+    def __init__(self, meta=None, start=0, size=0):
+        self.start = start
+        self.size = size
+        self.meta = meta

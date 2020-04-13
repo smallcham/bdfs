@@ -5,10 +5,10 @@ class Env:
     USER_DIR = os.path.expanduser('~')
     LOGIC_WORK_DIR = '/.bdfs'
     TOKEN_DIR = USER_DIR + LOGIC_WORK_DIR
-    PHYSICS_DIR = USER_DIR + LOGIC_WORK_DIR + '/.data'
+    PHYSICS_DIR = '/tmp' + LOGIC_WORK_DIR + '/.data'
     TOKEN_FILE = '.access_token'
     TOKEN_PATH = TOKEN_DIR + '/' + TOKEN_FILE
-    DEFAULT_BLOCK_SIZE = 2048
+    DEFAULT_BLOCK_SIZE = 1024
     READ_BLOCK_TIME_OUT = 60  # 读取一个块大小的超时时间（秒）
     BLOCK_DOWNLOAD_CHECK_TIME = 0.5  # 块下载校验间隔时间（秒）
 

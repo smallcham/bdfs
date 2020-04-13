@@ -5,17 +5,19 @@ import webbrowser
 from datetime import datetime
 from util import stream
 from model.enum import BaiDu, Env
-from model.entity import BDFile, BDMeta, DownloadInfo
+from model.entity import BDFile, BDMeta, DownloadInfo, TaskInfo
 from concurrent.futures import ThreadPoolExecutor
-from threading import Lock
-import time
+from queue import Queue
+from threading import Condition, Lock
 import logging
 
 log = logging.getLogger(__name__)
 
 thread_pool = ThreadPoolExecutor(20)
 download_lock = Lock()
+download_con = Condition(download_lock)
 download_map = {}
+download_task_queue = Queue()
 
 
 class BDPanClient:
@@ -184,9 +186,9 @@ class BDPanClient:
     def upload(self):
         pass
 
-    def download(self, f, start, end):
+    def download(self, f, start, size):
         meta = self.info(f.path, f.fs_id)
-        return self.__download(meta, start, end)
+        return self.__download(meta, start, size)
         # print(meta.dlink)
         # print(meta.filename)
         # print(meta.md5)
@@ -195,69 +197,73 @@ class BDPanClient:
         # print(meta.server_mtime)  # 服务器修改时间
         # pass
 
-    def __download(self, meta, start, end):
+    def __download(self, meta, start, size):
         if not meta:
             return b'bdfs: file load failed' + str(datetime.now()).encode('utf-8')
         path = Env.PHYSICS_DIR + meta.path
-        info = download_map.get(meta.fs_id, None)
-        if not info:
-            try:
-                with open(path, 'rb') as f:
-                    if f.seek(start) == -1:
-                        thread_pool.submit(self.__download_file, meta)
-                        self.__add_download_task_and_wait(meta)
-                        return self.__download(meta, start, end)
-                    return f.read(end)
-            except FileNotFoundError as _:
-                _d = path[:path.rindex('/')]
-                if not os.path.isdir(_d):
-                    os.makedirs(_d)
-                self.__add_download_task_and_wait(meta)
-                return self.__download(meta, start, end)
-        else:
-            sum_sec = 0
-            while info.tmp_size < end and info.tmp_size < info.size:
-                time.sleep(Env.BLOCK_DOWNLOAD_CHECK_TIME)
-                sum_sec += Env.BLOCK_DOWNLOAD_CHECK_TIME
-                if sum_sec >= Env.READ_BLOCK_TIME_OUT:
-                    log.error('read file block timeout: ' + str(meta.fs_id) + ' - start[' + str(start) + '] - end[' + str(end) + ']')
-                    return b''
-                info = download_map.get(meta.fs_id, None)
-            else:
-                with open(path, 'rb') as f:
-                    f.seek(start)
-                    return f.read(end)
-
-    def __add_download_task_and_wait(self, meta):
-        thread_pool.submit(self.__download_file, meta)
-        while not download_map.get(meta.fs_id, None):
-            time.sleep(0.01)
-
-    def __download_file(self, meta):
-        download_lock.acquire(blocking=True)
-        info = download_map.get(meta.fs_id, None)
-        if info:
-            return
+        download_task_queue.put(TaskInfo(meta, start, size))
+        _d = path[:path.rindex('/')]
+        if not os.path.isdir(_d):
+            os.makedirs(_d)
         try:
-            info = DownloadInfo(block=Env.DEFAULT_BLOCK_SIZE, complete_md5=meta.md5, size=meta.size,
-                                touch=datetime.now().timestamp())
-            download_map[meta.fs_id] = info
-            if download_lock.locked():
-                download_lock.release()
-            r = self.__request(url=meta.dlink, params={}, method='GET', raw=True, waterfall=True)
-            with open(Env.PHYSICS_DIR + meta.path, 'wb') as f:
-                for b in r.iter_content(chunk_size=info.block):
-                    if info.run_able():
-                        f.write(b)
-                        info.touch_tmp_size()
-                    else:
-                        return
-        except Exception as e:
-            log.error(e)
-            return
-        finally:
-            if download_lock.locked():
-                download_lock.release()
+            return self.__read_file(path, start, size)
+        except FileNotFoundError as _:
+            download_con.wait()
+            return self.__read_file(path, start, size)
+
+    @staticmethod
+    def __read_file(path, start, size):
+        with open(path, 'rb') as f:
+            while f.seek(start) == -1:
+                download_con.wait()
+                continue
+            return f.read(size)
+
+
+    def __download_file_direct(self, meta, start, size):
+        info = DownloadInfo(block=Env.DEFAULT_BLOCK_SIZE, complete_md5=meta.md5, size=meta.size,
+                            touch=datetime.now().timestamp())
+        download_map[meta.fs_id] = info
+        res = self.__request(url=meta.dlink, params={}, method='GET', raw=True, headers={'Range': 'bytes=%s-%s' % (str(start + 1), str(start + size))}).content
+        # r = self.__request(url=meta.dlink, params={}, method='GET', raw=True, waterfall=True, headers={'Range': 'bytes=%s-%s' % (str(start), str(end))})
+        # res = bytes()
+        # for b in r.iter_content(chunk_size=info.block):
+        #     if info.run_able():
+        #         info.touch_tmp_size()
+        #         res += b
+        #     else:
+        #         break
+        log.info('start: %s, size: %s' % (str(start), str(size)))
+        log.info(str(res))
+        return res
+
+    def process_download_file(self):
+        thread_pool.submit(self.__do_process_download_file)
+
+    def __do_process_download_file(self):
+        while True:
+            task_info = download_task_queue.get(True)
+            meta = task_info.meta
+            info = download_map.get(meta.fs_id, None)
+            try:
+                if not info:
+                    info = DownloadInfo(block=Env.DEFAULT_BLOCK_SIZE, complete_md5=meta.md5, size=meta.size,
+                                        touch=datetime.now().timestamp())
+                    download_map[meta.fs_id] = info
+                r = self.__request(url=meta.dlink, params={}, method='GET', raw=True, waterfall=True, headers={'Range': 'bytes=%s-%s' % (str(task_info.start + 1), str(task_info.start + task_info.size))})
+                with open(Env.PHYSICS_DIR + meta.path, 'a+b') as f:
+                    for b in r.iter_content(chunk_size=info.block):
+                        info = download_map.get(meta.fs_id, None)
+                        if info.run_able():
+                            f.write(b)
+                            info.touch_tmp_size()
+                            download_con.notifyAll()
+                        else:
+                            return
+            except Exception as e:
+                log.error(e)
+            finally:
+                download_con.notifyAll()
 
     def quota(self):
         res = self.__request(BaiDu.QUOTA, {}, 'GET')
