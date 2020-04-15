@@ -15,7 +15,12 @@ def do_request(url, params, data=None, method='GET', raw=False, headers=None, wa
         headers = {}
     try:
         headers.update({'User-Agent': 'pan.baidu.com'})
-        res = requests.request(method, url, params=params, data=data, headers=headers, stream=waterfall)
+        res = requests.request(method, url, params=params, data=None if not data else data.encode('utf-8'),
+                               headers=headers, stream=waterfall)
+        if res is not None and res.status_code == 403:
+            headers.update({'User-Agent': 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Ubuntu Chromium/80.0.3987.163 Chrome/80.0.3987.163 Safari/537.36'})
+            res = requests.request(method, url, params=params, data=None if not data else data.encode('utf-8'),
+                                   headers=headers, stream=waterfall)
         if raw:
             return res
         else:
@@ -27,6 +32,7 @@ def do_request(url, params, data=None, method='GET', raw=False, headers=None, wa
             return res
     except Exception as e:
         log.error(e)
+        return None if raw else {}
 
 
 def get_token(access_token=None, refresh_token=None, expire_time=None):

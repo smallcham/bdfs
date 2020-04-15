@@ -110,7 +110,12 @@ class BDfs(pyfuse3.Operations):
         return await super().mkdir(parent_inode, name, mode, ctx)
 
     async def unlink(self, parent_inode, name, ctx):
-        return await super().unlink(parent_inode, name, ctx)
+        f = BDFile.get_from_name(name)
+        if not f:
+            return
+        _inode = BDFile.get_from_fs_id(parent_inode)
+        self.fs.rm(f.path)
+        self.fs.dir_cache('/' if parent_inode == pyfuse3.ROOT_INODE else _inode.path, force=True)
 
     async def rmdir(self, parent_inode, name, ctx):
         return await super().rmdir(parent_inode, name, ctx)

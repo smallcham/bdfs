@@ -32,15 +32,16 @@ class BDPanClient:
         res = self.__request(BaiDu.LIST, {'dir': d}, 'GET')
         return BDFile.from_json_list(res.get('list', []), inode)
 
-    def dir_cache(self, d='/', inode=None, expire=BaiDu.DIR_EXPIRE_THRESHOLD):
+    def dir_cache(self, d='/', inode=None, expire=BaiDu.DIR_EXPIRE_THRESHOLD, force=False):
         """
         根据路径从缓存中获取文件列表，如果缓存中没有或缓存超时，则从百度云盘获取后加入缓存并返回列表
+        :param force: 强制刷新缓存
         :param inode:
         :param d: 路径
         :param expire: 缓存过期时间（秒）
         :return:
         """
-        res = self.cache.get(d, {})
+        res = {} if force else self.cache.get(d, {})
         items = res.get('items', None)
         _expire = res.get('expire', -1)
         if (_expire != -1 and datetime.now().timestamp() > _expire) or not items:
@@ -84,10 +85,10 @@ class BDPanClient:
 
     def mkdir(self, path):
         res = self.__request(BaiDu.UPLOAD, {
-                'path': path,
-                'size': 0,
-                'isdir': 1
-            }, method='POST')
+            'path': path,
+            'size': 0,
+            'isdir': 1
+        }, method='POST')
         print(res)
 
     def rm(self, *files):
@@ -95,12 +96,21 @@ class BDPanClient:
         return self.__opera('delete', _files)
 
     def rename(self, path, new_name):
-        return self.__opera('rename', 'async=2&filelist=[{"path":"%s","dest":"/","newname":"%s"]' % (path, new_name))
+        return self.__opera('rename',
+                            'async=0&filelist=[{"path":"%s","dest":"%s","newname":"%s","ondup":"newcopy"}]' % (
+                                path, path[path.rindex('/'):], new_name))
+
+    def mv(self, path, new_path, new_name=None):
+        return self.__opera('move',
+                            'async=0&filelist=[{"path":"%s","dest":"%s","newname":"%s","ondup":"newcopy"}]' % (
+                                path, new_path, new_name if new_name else path[path.rindex('/'):]
+                            ))
 
     def __opera(self, opera, files):
-        return self.__request(BaiDu.OPERA, {
+        res = self.__request(BaiDu.OPERA, {
             'opera': opera
         }, data=files, method='POST')
+        return res.get('errno', -1) == 0
 
     def quota(self):
         res = self.__request(BaiDu.QUOTA, {}, 'GET')
@@ -158,18 +168,22 @@ class BDPanClient:
         with open(real_path, 'a+b') as f:
             '''
             文件起始大小足够,但是要取的size位不足, 则偏移后再进行下载
+            此处需要处理客户端程序有多线程读取的情况，如果读取的字节有间隔的情况，此处会偏移至已下载文件的最大值，然后开始下载
             '''
-            _real_start = (f_size if (f_size > task_info.start and f_size < task_info.size) else task_info.start)
-            _real_end = _real_start + (task_info.block if task_info.size < task_info.block else task_info.size)
-
+            if f_size < task_info.start:
+                _real_start = f_size
+                _real_end = task_info.start + (task_info.block if task_info.size < task_info.block else task_info.size)
+            else:
+                _real_start = f_size if (task_info.start < f_size < task_info.size) else task_info.start
+                _real_end = _real_start + (task_info.block if task_info.size < task_info.block else task_info.size)
             try:
                 r = self.__request(url=meta.dlink, params={}, method='GET', raw=True, waterfall=True, headers={
                     'Range': 'bytes=%s-%s' % (str(_real_start), str(_real_end))})
+                if not r:
+                    return
             except Exception as e:
                 log.error(str(e))
                 return
-            if r.status_code == 403:
-                return b''
             for b in r.iter_content(chunk_size=task_info.block):
                 info = download_map.get(meta.fs_id, None)
                 if info and info.run_able():
@@ -190,4 +204,6 @@ def read_file(real_path, start, size):
 
 if __name__ == '__main__':
     client = BDPanClient()
-    print(client.rename('/payload.ser', 'haha.ser'))
+    print(client.mkdir('/asd'))
+    # print(client.rm('/aaa.ser'))
+    # print(client.rename('/haha.ser', 'payload.ser'))
