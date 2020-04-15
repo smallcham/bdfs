@@ -1,4 +1,4 @@
-from datetime import datetime
+from model.enum import Env
 
 
 class BDFile:
@@ -25,6 +25,8 @@ class BDFile:
         self.local_ctime = local_ctime
         self.server_mtime = server_mtime
         self.fs_id = fs_id
+        BDFile.fs_pool[self.fs_id] = self
+        BDFile.name_pool[self.filename] = self
 
     @staticmethod
     def from_json(res):
@@ -112,13 +114,12 @@ class BDMeta:
         return meta
 
 
-class DownloadInfo:
-    def __init__(self, block=0, complete_md5=None, size=0, touch=None):
-        self.block = block
-        self.complete_md5 = complete_md5
-        self.tmp_size = 0
+class TaskInfo:
+    def __init__(self, meta=None, start=0, size=0, block=Env.DEFAULT_BLOCK_SIZE):
+        self.start = start
         self.size = size
-        self.touch = touch
+        self.meta = meta
+        self.block = block
         self.state = 1
 
     def shutdown(self):
@@ -126,14 +127,3 @@ class DownloadInfo:
 
     def run_able(self):
         return self.state == 1
-
-    def touch_tmp_size(self):
-        self.tmp_size += self.block
-        self.touch = datetime.now().timestamp()
-
-
-class TaskInfo:
-    def __init__(self, meta=None, start=0, size=0):
-        self.start = start
-        self.size = size
-        self.meta = meta

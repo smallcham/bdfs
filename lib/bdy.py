@@ -1,151 +1,26 @@
-import requests
 import os
-import json
-import webbrowser
+from lib._request import *
 from datetime import datetime
-from util import stream
 from model.enum import BaiDu, Env
-from model.entity import BDFile, BDMeta, DownloadInfo, TaskInfo
-from concurrent.futures import ProcessPoolExecutor
-from multiprocessing import Queue
+from model.entity import BDFile, BDMeta, TaskInfo
+import uuid
 import logging
+import hashlib
 
 log = logging.getLogger(__name__)
 
-process_pool = ProcessPoolExecutor(2)
-download_con = Queue(1)
 download_map = {}
-download_task_queue = Queue()
-
-
-def do_request(url, params, method='GET', raw=False, headers=None, waterfall=False):
-    if headers is None:
-        headers = {}
-    try:
-        headers.update({'User-Agent': 'pan.baidu.com'})
-        res = requests.request(method, url, params=params, headers=headers, stream=waterfall)
-        if raw:
-            return res
-        else:
-            res = res.json()
-            if res.get('error', '') == 'expired_token':
-                stream.print_error('access token is expired or error please reauthorize.')
-                atoken, rtoken, etime = get_token()
-                return do_request(url=url, params=params, method=method, headers={'access_token': atoken})
-            return res
-    except Exception as e:
-        log.error(e)
-
-
-def get_token(access_token=None, refresh_token=None, expire_time=None):
-    """
-    获取token， 并将token存放于 ~/.bdfs/.access_token 文件中(可以在enum中修改默认值)
-    如果token过期时间低于阈值则执行刷新
-    :return:
-    """
-    if access_token and refresh_token:
-        if expire_time - datetime.now().timestamp() < BaiDu.TOKEN_EXPIRE_THRESHOLD:
-            return r_token(refresh_token)  # token过期时间低于阈值则执行刷新
-        return access_token, refresh_token
-    try:
-        with open(Env.TOKEN_PATH, 'r') as f:
-            token = f.read()
-        if not token:
-            access_token, refresh_token, expires_in = req_token(req_code())
-            if not access_token or not refresh_token:
-                stream.print_error('access validate failed! please check your code is right, or you can retry '
-                                   'otherwise check you internet')
-                exit(0)
-            return store_token(access_token, refresh_token, expires_in)
-        else:
-            token = json.loads(token)
-            access_token = token.get('access_token', None)
-            refresh_token = token.get('refresh_token', None)
-            expire_time = token.get('expire_time', 0)
-            if not access_token or not refresh_token:
-                with open(Env.TOKEN_PATH, 'w') as f:
-                    f.write('')
-            return get_token(access_token, refresh_token, expire_time)
-    except FileNotFoundError as _:
-        os.mkdir(Env.TOKEN_DIR)
-        f = open(Env.TOKEN_PATH, 'w')
-        f.close()
-        get_token(access_token, refresh_token, expire_time)
-    return access_token, refresh_token, expire_time
-
-
-def req_code():
-    """
-    请求code获取链接，等待用户输入认证code
-    :return:
-    """
-    webbrowser.open(BaiDu.GET_CODE)
-    stream.print_info('Waiting for browser to open automatically:\n %s\n If is not open, you may need copy this '
-                      'link to your web browser and request it.' % BaiDu.GET_CODE)
-    stream.print_info('Please paste access code: \n')
-    return input()
-
-
-def store_token(access_token, refresh_token, expires_in):
-    expire_time = datetime.now().timestamp() + expires_in
-    with open(Env.TOKEN_PATH, 'wt') as f:
-        f.write(json.dumps({
-            'access_token': access_token,
-            'refresh_token': refresh_token,
-            'expire_time': expire_time
-        }))
-    return access_token, refresh_token, expire_time
-
-
-def req_token(code):
-    res = do_request(url=BaiDu.GET_ACCESS_KEY, params={
-        'grant_type': 'authorization_code',
-        'code': code,
-        'client_id': BaiDu.CLIENT_ID,
-        'client_secret': BaiDu.CLIENT_SECRET,
-        'scope=': BaiDu.SCOPE,
-        'redirect_uri': 'oob'
-    }, method='GET')
-    return res.get('access_token', None), res.get('refresh_token', None), res.get('expires_in', 0)
-
-
-def r_token(refresh_token):
-    res = do_request(url=BaiDu.GET_ACCESS_KEY, params={
-        'grant_type': 'refresh_token',
-        'refresh_token': refresh_token,
-        'client_id': BaiDu.CLIENT_ID,
-        'client_secret': BaiDu.CLIENT_SECRET
-    }, method='GET')
-    access_token = res.get('access_token', None)
-    refresh_token = res.get('refresh_token', None)
-    expires_in = res.get('expires_in', 0)
-    if expires_in == 0:
-        stream.print_error('refresh token is failed you can retry reauthorize or remount bdfs.')
-        stream.print_info('Retry (Y/N): \n')
-        cond = input()
-        if str(cond).upper() == 'Y':
-            r_token(refresh_token)
-        else:
-            exit(0)
-    else:
-        return store_token(access_token, refresh_token, expires_in)
-
-
-def request(atoken, rtoken, etime, url, params, method='GET', raw=False, headers=None, waterfall=False):
-    params['access_token'] = get_token(atoken, rtoken, etime)[0]
-    return do_request(url, params, method, raw, headers, waterfall)
 
 
 class BDPanClient:
 
     def __init__(self):
-        self.access_token = None
-        self.refresh_token = None
-        self.expire_time = 0
+        self.access_token, self.refresh_token, self.expire_time = get_token()
         self.cache = {}
 
-    def __request(self, url, params, method='GET', raw=False, headers=None, waterfall=False):
-        return request(atoken=self.access_token, rtoken=self.refresh_token, etime=self.expire_time, url=url, params=params, method=method, raw=raw, headers=headers, waterfall=waterfall)
+    def __request(self, url, params, data=None, method='GET', raw=False, headers=None, waterfall=False):
+        return request(atoken=self.access_token, rtoken=self.refresh_token, etime=self.expire_time, url=url,
+                       params=params, data=data, method=method, raw=raw, headers=headers, waterfall=waterfall)
 
     def dir(self, d='/', inode=None):
         """
@@ -186,8 +61,46 @@ class BDPanClient:
         res = res.get('list', [])
         return None if res == [] else BDMeta.from_json(res[0])
 
-    def upload(self):
-        pass
+    # def upload(self, file_path, upload_path, size, is_dir):
+    #     f_size = os.path.getsize(file_path)
+    #     if f_size != 0 and (f_size / 1024 / 1024)
+    #     block_list = []
+    #     _block = b''
+    #     with open(file_path, 'rb') as fp:
+    #         _block += fp.readline()
+    #     file_md5 = hashlib.md5(data).hexdigest()
+    #     res = self.__request(BaiDu.PRE_UPLOAD, {
+    #         'path': upload_path,
+    #         'size': size,
+    #         'isdir': 1 if is_dir else 0,
+    #         'autoinit': 1,
+    #         'rtype': 0,
+    #         'uploadid': str(uuid.uuid4()),
+    #         'block_list': [],
+    #         'content-md5': file_md5,
+    #         'slice-md5': ''
+    #     })
+    #     return
+
+    def mkdir(self, path):
+        res = self.__request(BaiDu.UPLOAD, {
+                'path': path,
+                'size': 0,
+                'isdir': 1
+            }, method='POST')
+        print(res)
+
+    def rm(self, *files):
+        _files = 'async=0&filelist=["' + '","'.join(files) + '"]'
+        return self.__opera('delete', _files)
+
+    def rename(self, path, new_name):
+        return self.__opera('rename', 'async=2&filelist=[{"path":"%s","dest":"/","newname":"%s"]' % (path, new_name))
+
+    def __opera(self, opera, files):
+        return self.__request(BaiDu.OPERA, {
+            'opera': opera
+        }, data=files, method='POST')
 
     def quota(self):
         res = self.__request(BaiDu.QUOTA, {}, 'GET')
@@ -217,46 +130,64 @@ class BDPanClient:
         如果文件已经存在，并且服务器修改时间和本地记录一致，则直接读取
         如果需要读取的字节不够则添加至下载队列等待下载，否则直接返回
         '''
-        while not os.path.exists(path):
-            pass
-        return self.__read_file(path, start, size)
+        info = TaskInfo(meta=meta, start=start, size=size)
+        download_map[meta.fs_id] = info
+        return self.__do_download_file(info)
 
-    @staticmethod
-    def __read_file(path, start, size):
-        with open(path, 'rb') as f:
-            while f.seek(start) == -1 and os.path.getsize(path) < (start + size - 1):
-                pass
-            return f.read(size)
-
-
-def do_process_download_file(atoken, rtoken, etime):
-    while True:
-        task_info = download_task_queue.get(block=True)
-        meta = task_info.meta
-        info = download_map.get(meta.fs_id, None)
+    def __do_download_file(self, task_info):
+        info = download_map.get(task_info.meta.fs_id, None)
+        _real_path = Env.PHYSICS_DIR + task_info.meta.path
         try:
             if not info:
-                info = DownloadInfo(block=Env.DEFAULT_BLOCK_SIZE, complete_md5=meta.md5, size=meta.size,
-                                    touch=datetime.now().timestamp())
-                download_map[meta.fs_id] = info
-            r = request(atoken=atoken, rtoken=rtoken, etime=etime, url=meta.dlink, params={}, method='GET', raw=True, waterfall=True, headers={
-                'Range': 'bytes=%s-%s' % (str(task_info.start + 1), str(task_info.start + task_info.size))})
-            with open(Env.PHYSICS_DIR + meta.path, 'a+b') as f:
-                for b in r.iter_content(chunk_size=info.block):
-                    info = download_map.get(meta.fs_id, None)
-                    if info and info.run_able():
+                return b''
+            '''
+            文件大小已经足够,则直接返回需要读取的字节区间
+            '''
+            f_size = os.path.getsize(_real_path)
+            if f_size >= task_info.start + task_info.size:
+                download_map[task_info.meta.fs_id] = None
+            else:
+                self.__do_block_download(_real_path, task_info, f_size)
+            return read_file(_real_path, task_info.start, task_info.size)
+        except FileNotFoundError as _:
+            self.__do_block_download(_real_path, task_info, 0)
+            return read_file(_real_path, task_info.start, task_info.size)
+
+    def __do_block_download(self, real_path, task_info, f_size):
+        meta = task_info.meta
+        with open(real_path, 'a+b') as f:
+            '''
+            文件起始大小足够,但是要取的size位不足, 则偏移后再进行下载
+            '''
+            _real_start = (f_size if (f_size > task_info.start and f_size < task_info.size) else task_info.start)
+            _real_end = _real_start + (task_info.block if task_info.size < task_info.block else task_info.size)
+
+            try:
+                r = self.__request(url=meta.dlink, params={}, method='GET', raw=True, waterfall=True, headers={
+                    'Range': 'bytes=%s-%s' % (str(_real_start), str(_real_end))})
+            except Exception as e:
+                log.error(str(e))
+                return
+            if r.status_code == 403:
+                return b''
+            for b in r.iter_content(chunk_size=task_info.block):
+                info = download_map.get(meta.fs_id, None)
+                if info and info.run_able():
+                    if os.path.getsize(real_path) < _real_end:
                         f.write(b)
-                        info.touch_tmp_size()
-                        download_con.put('')
                     else:
-                        return
-        except Exception as e:
-            log.error(e)
-        finally:
-            download_con.put('')
+                        break
+                else:
+                    download_map[meta.fs_id] = None
+                    break
+
+
+def read_file(real_path, start, size):
+    with open(real_path, 'rb') as f:
+        f.seek(start)
+        return f.read(size)
 
 
 if __name__ == '__main__':
-    bdy = BDPanClient()
-    # print(bdy.dir('/PDF文档'))
-    print(bdy.info('/PDF文档', '1113487933785121'))
+    client = BDPanClient()
+    print(client.rename('/payload.ser', 'haha.ser'))

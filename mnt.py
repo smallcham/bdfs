@@ -5,8 +5,11 @@ import pyfuse3
 import trio
 import os
 import logging
+import random
+from datetime import datetime
 from lib.bdy import BDPanClient, download_map
 from model.entity import BDFile
+from model.enum import Env
 
 log = logging.getLogger(__name__)
 
@@ -22,7 +25,7 @@ class BDfs(pyfuse3.Operations):
     def init(self):
         super(BDfs).__init__()
         self.fs = BDPanClient()
-        self.fs.process_download_file()
+        self.fs.dir_cache()
         self.files = []
 
     async def lookup(self, parent_inode, name, ctx):
@@ -47,16 +50,16 @@ class BDfs(pyfuse3.Operations):
         :return:
         """
         entry = pyfuse3.EntryAttributes()
+        f = BDFile.get_from_fs_id(inode)
         if inode == pyfuse3.ROOT_INODE:
             entry.st_mode = (stat.S_IFDIR | 0o755)
             entry.st_size = 0
         else:
-            f = BDFile.get_from_fs_id(inode)
             entry.st_mode = (stat.S_IFDIR | 0o755) if f.isdir else (stat.S_IFREG | 0o644)
             entry.st_size = f.size
-            entry.st_atime_ns = f.server_mtime
-            entry.st_ctime_ns = f.server_ctime
-            entry.st_mtime_ns = f.server_mtime
+            entry.st_atime_ns = int(f.server_mtime * 1e9)
+            entry.st_ctime_ns = int(f.server_ctime * 1e9)
+            entry.st_mtime_ns = int(f.server_mtime * 1e9)
             inode = f.fs_id
 
         entry.st_gid = os.getgid()
@@ -66,13 +69,42 @@ class BDfs(pyfuse3.Operations):
         # return await super().getattr(inode, ctx)
 
     async def setattr(self, inode, attr, fields, fh, ctx):
-        return await super().setattr(inode, attr, fields, fh, ctx)
+        f = BDFile.get_from_fs_id(inode)
+        if fields.update_size:
+            f.size = attr.st_size
+        if fields.update_mode:
+            pass
+        if fields.update_uid:
+            pass
+        if fields.update_gid:
+            pass
+        if fields.update_atime:
+            f.server_atime = datetime.now().timestamp()
+        if fields.update_mtime:
+            f.server_mtime = datetime.now().timestamp()
+        if fields.update_ctime:
+            f.server_ctime = datetime.now().timestamp()
+        return await self.getattr(inode, ctx)
 
     async def readlink(self, inode, ctx):
         return await super().readlink(inode, ctx)
 
     async def mknod(self, parent_inode, name, mode, rdev, ctx):
-        return await super().mknod(parent_inode, name, mode, rdev, ctx)
+        _inode = BDFile.get_from_fs_id(parent_inode)
+        if not _inode:
+            path = '/'
+        else:
+            path = _inode.path + '/'
+        if not os.path.isdir(Env.PHYSICS_DIR):
+            os.makedirs(Env.PHYSICS_DIR)
+        name_bytes = name
+        name = name.decode('utf-8')
+        with open(Env.PHYSICS_DIR + path + name, 'wb') as f:
+            f.write(b'')
+        inode = random.randint(0, 9999999999999999999)
+        ns = (datetime.now().timestamp() * 1e9)
+        self.fs.cache[path]['items'].append(BDFile(isdir=False, server_ctime=ns, server_mtime=ns, local_ctime=ns, local_mtime=ns, fs_id=inode, path=path if path == '/' else _inode.path, filename=name, filename_bytes=name_bytes, size=0))
+        return await self.getattr(inode, ctx)
 
     async def mkdir(self, parent_inode, name, mode, ctx):
         return await super().mkdir(parent_inode, name, mode, ctx)
@@ -103,9 +135,11 @@ class BDfs(pyfuse3.Operations):
         if not f:
             return b''
         else:
-            return self.fs.download(f, off, size)
+            res = self.fs.download(f, off, size)
+            return res
 
     async def write(self, fh, off, buf):
+        print(off, buf)
         return await super().write(fh, off, buf)
 
     async def flush(self, fh):
@@ -182,6 +216,7 @@ class BDfs(pyfuse3.Operations):
         return await super().access(inode, mode, ctx)
 
     async def create(self, parent_inode, name, mode, flags, ctx):
+        print('create')
         return await super().create(parent_inode, name, mode, flags, ctx)
 
 
