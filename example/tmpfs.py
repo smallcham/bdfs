@@ -436,16 +436,16 @@ def parse_args():
 
 if __name__ == '__main__':
 
-    options = parse_args()
-    init_logging(options.debug)
+    # options = parse_args()
+    # init_logging(options.debug)
     operations = Operations()
 
     fuse_options = set(pyfuse3.default_options)
     fuse_options.add('fsname=tmpfs')
     fuse_options.discard('default_permissions')
-    if options.debug_fuse:
-        fuse_options.add('debug')
-    pyfuse3.init(operations, options.mountpoint, fuse_options)
+    # if options.debug_fuse:
+    #     fuse_options.add('debug')
+    pyfuse3.init(operations, '/home/wangzhanzhi/test', fuse_options)
 
     try:
         trio.run(pyfuse3.main)

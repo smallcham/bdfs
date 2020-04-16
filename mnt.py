@@ -13,6 +13,7 @@ from model.enum import Env
 
 log = logging.getLogger(__name__)
 
+
 # try:
 #     import faulthandler
 # except ImportError:
@@ -20,21 +21,21 @@ log = logging.getLogger(__name__)
 # else:
 #     faulthandler.enable()
 
+tmp_suffix = ['~', '.swo', '.swp', 'swx']
+
 
 class BDfs(pyfuse3.Operations):
     def init(self):
         super(BDfs).__init__()
         self.fs = BDPanClient()
-        self.fs.dir_cache()
-        self.files = []
 
     async def lookup(self, parent_inode, name, ctx):
         # if name == '.' or name == '..' or name == '/':
         #     return self.getattr(parent_inode, ctx)
-        f = BDFile.get_from_name(name)
+        f = BDFile.get_from_inode_name(parent_inode, name)
         if not f:
             raise pyfuse3.FUSEError(errno.ENOENT)
-        return self.getattr(f.fs_id, ctx)
+        return await self.getattr(f.fs_id, ctx)
         # return await super().lookup(parent_inode, name, ctx)
 
     async def forget(self, inode_list):
@@ -52,7 +53,7 @@ class BDfs(pyfuse3.Operations):
         entry = pyfuse3.EntryAttributes()
         f = BDFile.get_from_fs_id(inode)
         if inode == pyfuse3.ROOT_INODE:
-            entry.st_mode = (stat.S_IFDIR | 0o755)
+            entry.st_mode = (stat.S_IFDIR | 0o544)
             entry.st_size = 0
         else:
             entry.st_mode = (stat.S_IFDIR | 0o755) if f.isdir else (stat.S_IFREG | 0o644)
@@ -66,7 +67,6 @@ class BDfs(pyfuse3.Operations):
         entry.st_uid = os.getuid()
         entry.st_ino = inode
         return entry
-        # return await super().getattr(inode, ctx)
 
     async def setattr(self, inode, attr, fields, fh, ctx):
         f = BDFile.get_from_fs_id(inode)
@@ -103,28 +103,38 @@ class BDfs(pyfuse3.Operations):
             f.write(b'')
         inode = random.randint(0, 9999999999999999999)
         ns = (datetime.now().timestamp() * 1e9)
-        self.fs.cache[path]['items'].append(BDFile(isdir=False, server_ctime=ns, server_mtime=ns, local_ctime=ns, local_mtime=ns, fs_id=inode, path=path if path == '/' else _inode.path, filename=name, filename_bytes=name_bytes, size=0))
+        self.fs.cache[path]['items'].append(
+            BDFile(isdir=False, server_ctime=ns, server_mtime=ns, local_ctime=ns, local_mtime=ns, fs_id=inode,
+                   path=path if path == '/' else _inode.path, filename=name, filename_bytes=name_bytes, size=0))
         return await self.getattr(inode, ctx)
 
     async def mkdir(self, parent_inode, name, mode, ctx):
         return await super().mkdir(parent_inode, name, mode, ctx)
 
     async def unlink(self, parent_inode, name, ctx):
-        f = BDFile.get_from_name(name)
-        if not f:
-            return
-        _inode = BDFile.get_from_fs_id(parent_inode)
-        self.fs.rm(f.path)
-        self.fs.dir_cache('/' if parent_inode == pyfuse3.ROOT_INODE else _inode.path, force=True)
+        self.__rm(parent_inode, name)
 
     async def rmdir(self, parent_inode, name, ctx):
-        return await super().rmdir(parent_inode, name, ctx)
+        self.__rm(parent_inode, name)
 
     async def symlink(self, parent_inode, name, target, ctx):
         return await super().symlink(parent_inode, name, target, ctx)
 
     async def rename(self, parent_inode_old, name_old, parent_inode_new, name_new, flags, ctx):
-        return await super().rename(parent_inode_old, name_old, parent_inode_new, name_new, flags, ctx)
+        name_new = name_new.decode('utf-8')
+        name_old = name_old.decode('utf-8')
+        if parent_inode_old == parent_inode_new:
+            f = BDFile.get_from_fs_id(parent_inode_old)
+            path = '/' if parent_inode_old == pyfuse3.ROOT_INODE else f.path + '/'
+            self.fs.rename_and_flush(path + name_old, name_new)
+        else:
+            old_f = BDFile.get_from_inode_name(parent_inode_old, name_old)
+            if parent_inode_new == pyfuse3.ROOT_INODE:
+                self.fs.mv_and_flush(old_f.path, '/', name_new)
+            else:
+                new_f = BDFile.get_from_fs_id(parent_inode_new)
+                if old_f is not None:
+                    self.fs.mv_and_flush(old_f.path, new_f.path, name_new)
 
     async def link(self, inode, new_parent_inode, new_name, ctx):
         return await super().link(inode, new_parent_inode, new_name, ctx)
@@ -151,12 +161,7 @@ class BDfs(pyfuse3.Operations):
         return await super().flush(fh)
 
     async def release(self, fh):
-        info = download_map.get(fh, None)
-        if info:
-            info.shutdown()
-            download_map[fh] = None
-        else:
-            return
+        download_map[fh] = None
         # return await super().release(fh)
 
     async def fsync(self, fh, datasync):
@@ -176,22 +181,17 @@ class BDfs(pyfuse3.Operations):
         需要注意的是这里的inode实际上并不一定是文件系统理解中的inode，但逻辑上是一样的，每个目录和文件都需要有inode。
         此处根目录没有，所以做判断 如果fh(inode) = 根inode 则默认获取根目录列表
         :param fh: fh(inode) 逻辑上的inode，用作文件或文件夹的唯一标识
-        :param start_id: start_id会从0开始一直更新 + 1，除非切换了inode也就是参数上的fh
+        :param start_id: start_id 是 pyfuse3.readdir_reply 的最后一个参数，在下次调用会传入 readdir 可以作为自定义的一个标识使用
         :param token:
         :return:
         """
-        if fh == pyfuse3.ROOT_INODE:
-            self.files = self.fs.dir_cache('/', pyfuse3.ROOT_INODE)
-            # BDFile.set_inode(pyfuse3.ROOT_INODE, self.files)
+        if start_id == -1:
+            return
         else:
             f = BDFile.get_from_fs_id(fh)
-            self.files = self.fs.dir_cache(f.path, fh)
-            # BDFile.set_inode(fh, self.files)
-        if start_id < len(self.files):
-            for f in self.files:
-                pyfuse3.readdir_reply(token, f.filename_bytes, await self.getattr(f.fs_id, None), f.fs_id)
-        return
-        # return await super().readdir(fh, start_id, token)
+        files = self.fs.dir_cache('/' if not f else f.path, pyfuse3.ROOT_INODE if not f else f.fs_id)
+        for file in files:
+            pyfuse3.readdir_reply(token, file.filename_bytes, await self.getattr(file.fs_id, None), -1)
 
     async def releasedir(self, fh):
         return await super().releasedir(fh)
@@ -200,7 +200,20 @@ class BDfs(pyfuse3.Operations):
         return await super().fsyncdir(fh, datasync)
 
     async def statfs(self, ctx):
-        return await super().statfs(ctx)
+        stat_ = pyfuse3.StatvfsData()
+        quota = self.fs.quota()
+        stat_.f_bsize = 512  # 块大小
+        stat_.f_frsize = 512  # 碎片块大小
+        size = quota.total
+        stat_.f_blocks = size // stat_.f_frsize  # 块总数
+        stat_.f_bfree = quota.free // stat_.f_bsize  # 剩余块数
+        stat_.f_bavail = stat_.f_bfree  # 非特权用户可使用的块数
+
+        inodes = quota.free / 512
+        stat_.f_files = inodes  # 索引节点总数
+        stat_.f_ffree = max(inodes, 100)  # 可产生索引节点数
+        stat_.f_favail = stat_.f_ffree  # 非特权用户可产生索引节点数
+        return stat_
 
     def stacktrace(self):
         super().stacktrace()
@@ -224,6 +237,13 @@ class BDfs(pyfuse3.Operations):
         print('create')
         return await super().create(parent_inode, name, mode, flags, ctx)
 
+    def __rm(self, p_inode, name):
+        f = BDFile.get_from_name(name)
+        if not f:
+            return
+        self.fs.rm(f.path)
+        self.fs.dir_cache('/' if p_inode == pyfuse3.ROOT_INODE else f.path, force=True)
+
 
 def init_logging(debug=False):
     formatter = logging.Formatter('%(asctime)s.%(msecs)03d %(threadName)s: '
@@ -245,12 +265,12 @@ if __name__ == '__main__':
     fs = BDfs()
     fuse_options = set(pyfuse3.default_options)
     fuse_options.add('fsname=bdfs')
-    # fuse_options.discard('default_permissions')
+    fuse_options.discard('default_permissions')
     pyfuse3.init(fs, '/home/wangzhanzhi/test', fuse_options)
 
     try:
         trio.run(pyfuse3.main)
-    except:
+    except Exception as e:
+        print(e)
         pyfuse3.close(unmount=False)
-        raise
     pyfuse3.close()

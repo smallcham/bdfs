@@ -5,6 +5,7 @@ class BDFile:
     name_pool = {}
     fs_pool = {}
     inode_pool = {}
+    inode_name_pool = {}
 
     def __init__(self, privacy=None, category=None, unlist=None, isdir=None, oper_id=None, server_ctime=None,
                  local_mtime=None, size=None, filename=None, filename_bytes=None, share=None, path=None,
@@ -69,8 +70,19 @@ class BDFile:
         return BDFile.inode_pool.get(inode, None)
 
     @staticmethod
+    def get_from_inode_name(inode, name):
+        return BDFile.inode_name_pool.get(str(inode) + (name.decode('utf-8') if isinstance(name, bytes) else name), None)
+
+    @staticmethod
     def get_from_fs_id(fs_id):
         return BDFile.fs_pool.get(fs_id, None)
+
+    @staticmethod
+    def clear_cache():
+        BDFile.fs_pool.clear()
+        BDFile.name_pool.clear()
+        BDFile.inode_name_pool.clear()
+        BDFile.inode_pool.clear()
 
     @staticmethod
     def from_json_list(items, inode=None):
@@ -78,6 +90,7 @@ class BDFile:
         for item in items:
             f = BDFile.from_json(item)
             res.append(f)
+            BDFile.inode_name_pool[str(inode) + f.filename] = f
         inode = 1 if not inode else inode
         BDFile.inode_pool[inode] = res
         return res
@@ -127,3 +140,14 @@ class TaskInfo:
 
     def run_able(self):
         return self.state == 1
+
+
+class BDQuota:
+    def __init__(self, total=0, used=0):
+        self.total = total
+        self.used = used
+        self.free = total - used
+
+    @staticmethod
+    def from_json(res):
+        return BDQuota(res.get('total', None), res.get('used', None))

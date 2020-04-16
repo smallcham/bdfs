@@ -2,7 +2,7 @@ import os
 from lib._request import *
 from datetime import datetime
 from model.enum import BaiDu, Env
-from model.entity import BDFile, BDMeta, TaskInfo
+from model.entity import BDFile, BDMeta, TaskInfo, BDQuota
 import uuid
 import logging
 import hashlib
@@ -17,6 +17,7 @@ class BDPanClient:
     def __init__(self):
         self.access_token, self.refresh_token, self.expire_time = get_token()
         self.cache = {}
+        self.meta_cache = {}
 
     def __request(self, url, params, data=None, method='GET', raw=False, headers=None, waterfall=False):
         return request(atoken=self.access_token, rtoken=self.refresh_token, etime=self.expire_time, url=url,
@@ -50,6 +51,13 @@ class BDPanClient:
                 'expire': -1 if expire == -1 else datetime.now().timestamp() + expire
             }
         return self.cache[d]['items']
+
+    def info_cache(self, path, fsid, force=False):
+        res = None if force else self.meta_cache.get(path, None)
+        if not res:
+            res = self.info(path, fsid)
+            self.meta_cache[path] = res
+        return res
 
     def info(self, path, fsid):
         res = self.__request(BaiDu.INFO, {
@@ -95,10 +103,20 @@ class BDPanClient:
         _files = 'async=0&filelist=["' + '","'.join(files) + '"]'
         return self.__opera('delete', _files)
 
+    def rename_and_flush(self, path, new_name):
+        self.rename(path, new_name)
+        self.cache.clear()
+        BDFile.clear_cache()
+
     def rename(self, path, new_name):
         return self.__opera('rename',
                             'async=0&filelist=[{"path":"%s","dest":"%s","newname":"%s","ondup":"newcopy"}]' % (
                                 path, path[path.rindex('/'):], new_name))
+
+    def mv_and_flush(self, path, new_path, new_name=None):
+        self.mv(path, new_path, new_name)
+        self.cache.clear()
+        BDFile.clear_cache()
 
     def mv(self, path, new_path, new_name=None):
         return self.__opera('move',
@@ -113,11 +131,10 @@ class BDPanClient:
         return res.get('errno', -1) == 0
 
     def quota(self):
-        res = self.__request(BaiDu.QUOTA, {}, 'GET')
-        return res
+        return BDQuota.from_json(self.__request(BaiDu.QUOTA, {}, 'GET'))
 
     def download(self, f, start, size):
-        meta = self.info(f.path, f.fs_id)
+        meta = self.info_cache(f.path, f.fs_id)
         return self.__download(meta, start, size)
         # print(meta.dlink)
         # print(meta.filename)
@@ -154,7 +171,7 @@ class BDPanClient:
             文件大小已经足够,则直接返回需要读取的字节区间
             '''
             f_size = os.path.getsize(_real_path)
-            if f_size >= task_info.start + task_info.size:
+            if f_size >= task_info.meta.size or f_size >= task_info.start + task_info.size:
                 download_map[task_info.meta.fs_id] = None
             else:
                 self.__do_block_download(_real_path, task_info, f_size)
