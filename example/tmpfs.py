@@ -185,8 +185,9 @@ class Operations(pyfuse3.Operations):
                         'AND rowid > ? ORDER BY rowid', (inode, off))
 
         for row in cursor2:
-            pyfuse3.readdir_reply(
+            res = pyfuse3.readdir_reply(
                 token, row['name'], await self.getattr(row['inode']), row['rowid'])
+            print(res)
 
     async def unlink(self, inode_p, name,ctx):
         entry = await self.lookup(inode_p, name)

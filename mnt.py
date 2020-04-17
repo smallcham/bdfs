@@ -39,7 +39,9 @@ class BDfs(pyfuse3.Operations):
         # return await super().lookup(parent_inode, name, ctx)
 
     async def forget(self, inode_list):
-        return await super().forget(inode_list)
+        BDFile.clear_cache()
+        self.fs.cache.clear()
+        # return await super().forget(inode_list)
 
     async def getattr(self, inode, ctx):
         """
@@ -51,18 +53,26 @@ class BDfs(pyfuse3.Operations):
         :return:
         """
         entry = pyfuse3.EntryAttributes()
-        f = BDFile.get_from_fs_id(inode)
+        entry.generation = 0
+        entry.entry_timeout = 300
+        entry.attr_timeout = 300
         if inode == pyfuse3.ROOT_INODE:
             entry.st_mode = (stat.S_IFDIR | 0o544)
+            entry.st_nlink = 0
             entry.st_size = 0
         else:
+            f = BDFile.get_from_fs_id(inode)
             entry.st_mode = (stat.S_IFDIR | 0o755) if f.isdir else (stat.S_IFREG | 0o644)
             entry.st_size = f.size
+            entry.st_nlink = 1
             entry.st_atime_ns = int(f.server_mtime * 1e9)
             entry.st_ctime_ns = int(f.server_ctime * 1e9)
             entry.st_mtime_ns = int(f.server_mtime * 1e9)
             inode = f.fs_id
 
+        entry.st_rdev = 0
+        entry.st_blksize = 512
+        entry.st_blocks = 1
         entry.st_gid = os.getgid()
         entry.st_uid = os.getuid()
         entry.st_ino = inode
@@ -95,8 +105,8 @@ class BDfs(pyfuse3.Operations):
             path = '/'
         else:
             path = _inode.path + '/'
-        if not os.path.isdir(Env.PHYSICS_DIR):
-            os.makedirs(Env.PHYSICS_DIR)
+        if not os.path.isdir(Env.PHYSICS_DIR + path):
+            os.makedirs(Env.PHYSICS_DIR + path)
         name_bytes = name
         name = name.decode('utf-8')
         with open(Env.PHYSICS_DIR + path + name, 'wb') as f:
@@ -185,13 +195,70 @@ class BDfs(pyfuse3.Operations):
         :param token:
         :return:
         """
+
+        # if start_id == 0:
+        #     f = BDFile.get_from_fs_id(fh)
+        #     files = self.fs.dir_cache('/' if not f else f.path, pyfuse3.ROOT_INODE if not f else f.fs_id)
+        # else:
+        #     f = BDFile.get_from_fs_id(start_id)
+        #     if f.isdir:
+        #         files = self.fs.dir_cache(f.path, f.fs_id)
+        #     else:
+        #         files = [f]
+        # for file in files:
+        #     res = pyfuse3.readdir_reply(token, file.filename_bytes, await self.getattr(file.fs_id, None), file.fs_id)
+        #     if not res:
+        #         break
+
+        # if start_id == -1:
+        #     return
+        # else:
+        #     if start_id != 0:
+        #         f = BDFile.get_from_fs_id(start_id)
+        #     else:
+        #         f = BDFile.get_from_fs_id(fh)
+        # files = self.fs.dir_cache('/' if not f else f.path, pyfuse3.ROOT_INODE if not f else f.fs_id)
+        # for file in files:
+        #     pyfuse3.readdir_reply(token, file.filename_bytes, await self.getattr(file.fs_id, None), file.fs_id if file.isdir else -1)
+
         if start_id == -1:
             return
         else:
             f = BDFile.get_from_fs_id(fh)
         files = self.fs.dir_cache('/' if not f else f.path, pyfuse3.ROOT_INODE if not f else f.fs_id)
+        ids = {}
+        print('____________________')
+        i = 0
+        print(len(files))
         for file in files:
-            pyfuse3.readdir_reply(token, file.filename_bytes, await self.getattr(file.fs_id, None), -1)
+            print('file len is %d' % len(files))
+            print(i)
+            i+=1
+            entry = pyfuse3.EntryAttributes()
+            entry.generation = 0
+            entry.entry_timeout = 300
+            entry.attr_timeout = 300
+
+            f = BDFile.get_from_fs_id(file.fs_id)
+            entry.st_mode = (stat.S_IFDIR | 0o755) if f.isdir else (stat.S_IFREG | 0o644)
+            entry.st_size = f.size
+            entry.st_nlink = 1
+            entry.st_atime_ns = int(f.server_mtime * 1e9)
+            entry.st_ctime_ns = int(f.server_ctime * 1e9)
+            entry.st_mtime_ns = int(f.server_mtime * 1e9)
+            inode = f.fs_id
+            if not ids.get(inode, None):
+                ids[inode] = [f.filename]
+            else:
+                ids[inode].append(f.filename)
+            entry.st_rdev = 0
+            entry.st_blksize = 512
+            entry.st_blocks = 1
+            entry.st_gid = os.getgid()
+            entry.st_uid = os.getuid()
+            entry.st_ino = inode
+            res = pyfuse3.readdir_reply(token, file.filename_bytes, entry, -1)
+        print(ids)
 
     async def releasedir(self, fh):
         return await super().releasedir(fh)
