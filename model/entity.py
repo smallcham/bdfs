@@ -5,6 +5,7 @@ name_pool = {}
 fs_pool = {}
 inode_pool = {}
 inode_name_pool = {}
+upload_pool = {}
 
 
 class BDFile:
@@ -198,3 +199,23 @@ class BDUser:
                       res.get('vip_type', None), res.get('uk', None))
         BDUser.user = user
         return BDUser.user
+
+
+class UploadInfo:
+    def __init__(self, p_inode, inode, file_path, upload_path):
+        self.p_inode = p_inode
+        self.inode = inode
+        self.file_path = file_path
+        self.upload_path = upload_path
+
+    @staticmethod
+    def get(inode):
+        return upload_pool.get(inode, None)
+
+    @staticmethod
+    def add(p_inode, inode, file_path, upload_path):
+        upload_pool[inode] = UploadInfo(p_inode, inode, file_path, upload_path)
+
+    @staticmethod
+    def remove(inode):
+        upload_pool[inode] = None

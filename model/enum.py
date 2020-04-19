@@ -16,6 +16,7 @@ class Env:
     DEFAULT_UPLOAD_BLOCK_SIZE = 5242880
     READ_BLOCK_TIME_OUT = 60  # 读取一个块大小的超时时间（秒）
     BLOCK_DOWNLOAD_CHECK_TIME = 0.5  # 块下载校验间隔时间（秒）
+    EMPTY_FILE_FLAG = b'btf'
 
 
 class BaiDu:

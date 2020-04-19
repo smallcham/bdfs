@@ -8,8 +8,8 @@ import logging
 import random
 from datetime import datetime
 from lib.bdy import BDPanClient, download_map
-from model.entity import BDFile
-from model.enum import Env
+from model.entity import BDFile, UploadInfo
+from model.enum import Env, BaiDu
 
 log = logging.getLogger(__name__)
 
@@ -102,28 +102,43 @@ class BDfs(pyfuse3.Operations):
             path = '/'
         else:
             path = _inode.path + '/'
-        if Env.CLOUD_HOME not in path:
-            raise pyfuse3.FUSEError(errno.EACCES)
-        if not os.path.isdir(Env.PHYSICS_DIR + path):
-            os.makedirs(Env.PHYSICS_DIR + path)
+
         name_bytes = name
         name = name.decode('utf-8')
 
+        tmp = is_tmp(name)
+        if Env.CLOUD_HOME not in path and not tmp:
+            raise pyfuse3.FUSEError(errno.EACCES)
+        if not os.path.isdir(Env.PHYSICS_DIR + path):
+            os.makedirs(Env.PHYSICS_DIR + path)
+
         file_path = Env.PHYSICS_DIR + path + name
-        if is_tmp(name):
+        if tmp:
             with open(file_path, 'wb') as f:
                 f.write(b'')
             inode = random.randint(0, 9999999999999999999)
             ns = (datetime.now().timestamp() * 1e9)
-            self.fs.cache[path]['items'].append(
-                BDFile(isdir=False, server_ctime=ns, server_mtime=ns, local_ctime=ns, local_mtime=ns, fs_id=inode,
-                       path=path if path == '/' else _inode.path, filename=name, filename_bytes=name_bytes, size=0))
+            _cache = self.fs.cache.get(path, None)
+            _file = BDFile(isdir=False, server_ctime=ns, server_mtime=ns, local_ctime=ns, local_mtime=ns, fs_id=inode,
+                           path=path if path == '/' else _inode.path, filename=name, filename_bytes=name_bytes, size=0)
+            if not _cache:
+                self.fs.cache[path] = {
+                    'items': [_file],
+                    'expire': datetime.now().timestamp() + BaiDu.DIR_EXPIRE_THRESHOLD
+                }
+            else:
+                self.fs.cache[path]['items'].append(_file)
             return await self.getattr(inode, ctx)
 
         with open(file_path, 'wb') as f:
-            f.write(b'bdfs tmp file')
-        fs_id = self.fs.upload(parent_inode, file_path, path + name)
+            f.write(Env.EMPTY_FILE_FLAG)
+        upload_path = path + name
+        # 因为百度不允许创建空文件，这里使用占位符上传临时文件
+        fs_id = self.fs.upload(parent_inode, file_path, upload_path)
         if fs_id:
+            UploadInfo.add(parent_inode, fs_id, file_path, upload_path)
+            # 上传成功后将本地临时文件删除，在写入时重新创建，避免文件写入内容包含占位符
+            os.remove(file_path)
             return await self.getattr(fs_id, ctx)
         raise pyfuse3.FUSEError(errno.EAGAIN)
 
@@ -161,6 +176,9 @@ class BDfs(pyfuse3.Operations):
     async def open(self, inode, flags, ctx):
         # if flags & os.O_RDWR or flags & os.O_WRONLY:
         #     raise pyfuse3.FUSEError(errno.EPERM)
+        info = UploadInfo.get(inode)
+        if info and Env.CLOUD_HOME not in info.upload_path:
+            raise pyfuse3.FUSEError(errno.EACCES)
         return pyfuse3.FileInfo(fh=inode)
 
     async def read(self, fh, off, size):
@@ -174,22 +192,29 @@ class BDfs(pyfuse3.Operations):
     async def write(self, fh, off, buf):
         node = BDFile.get_from_fs_id(fh)
         file_path = Env.PHYSICS_DIR + node.path
-        while True:
-            return await self.__do_write(node, file_path, off, buf)
+        while buf:
+            return await self.__do_write(file_path, off, buf)
 
-    async def __do_write(self, node, file_path, off, buf):
-        with open(file_path, 'wb') as f:
-            f.seek(off)
-            f.write(buf)
-        # if buf[len(buf):] == '':
-        #     self.fs.upload(node.p_inode, file_path, node.path)
-        return len(buf)
+    async def __do_write(self, file_path, off, buf):
+        try:
+            with open(file_path, 'a+b') as f:
+                f.seek(off)
+                f.write(buf)
+            return len(buf)
+        except Exception as e:
+            print(e)
 
     async def flush(self, fh):
         return await super().flush(fh)
 
     async def release(self, fh):
-        download_map[fh] = None
+        info = UploadInfo.get(fh)
+        if not info:
+            download_map[fh] = None
+        else:
+            UploadInfo.remove(fh)
+            self.fs.upload(info.p_inode, info.file_path, info.upload_path)
+            os.remove(info.file_path)
 
     async def fsync(self, fh, datasync):
         return await super().fsync(fh, datasync)
@@ -264,11 +289,13 @@ class BDfs(pyfuse3.Operations):
     def __rm(self, p_inode, name):
         self.fs.rm(p_inode, name)
 
+
 def is_tmp(name):
     for suffix in tmp_suffix:
         if name.endswith(suffix):
             return True
     return False
+
 
 def init_logging(debug=False):
     formatter = logging.Formatter('%(asctime)s.%(msecs)03d %(threadName)s: '
