@@ -2,10 +2,12 @@ import os
 from lib._request import *
 from datetime import datetime
 from model.enum import BaiDu, Env
-from model.entity import BDFile, BDMeta, TaskInfo, BDQuota
+from model.entity import BDFile, BDMeta, TaskInfo, BDQuota, BDUser
 import uuid
 import logging
 import hashlib
+from urllib3 import encode_multipart_formdata
+import json
 
 log = logging.getLogger(__name__)
 
@@ -19,9 +21,13 @@ class BDPanClient:
         self.cache = {}
         self.meta_cache = {}
 
-    def __request(self, url, params, data=None, method='GET', raw=False, headers=None, waterfall=False):
+    def __request(self, url, params, data=None, method='GET', raw=False, headers=None, waterfall=False, files=None):
         return request(atoken=self.access_token, rtoken=self.refresh_token, etime=self.expire_time, url=url,
-                       params=params, data=data, method=method, raw=raw, headers=headers, waterfall=waterfall)
+                       params=params, data=data, method=method, raw=raw, headers=headers, waterfall=waterfall,
+                       files=files)
+
+    def uinfo(self):
+        return BDUser.user if not BDUser.need_flush() else BDUser.from_json(self.__request(BaiDu.UINFO, {}))
 
     def dir(self, d='/', inode=None):
         """
@@ -70,55 +76,106 @@ class BDPanClient:
         res = res.get('list', [])
         return None if res == [] else BDMeta.from_json(res[0])
 
-    # def upload(self, file_path, upload_path, size, is_dir):
-    #     f_size = os.path.getsize(file_path)
-    #     if f_size != 0 and (f_size / 1024 / 1024)
-    #     block_list = []
-    #     _block = b''
-    #     with open(file_path, 'rb') as fp:
-    #         _block += fp.readline()
-    #     file_md5 = hashlib.md5(data).hexdigest()
-    #     res = self.__request(BaiDu.PRE_UPLOAD, {
-    #         'path': upload_path,
-    #         'size': size,
-    #         'isdir': 1 if is_dir else 0,
-    #         'autoinit': 1,
-    #         'rtype': 0,
-    #         'uploadid': str(uuid.uuid4()),
-    #         'block_list': [],
-    #         'content-md5': file_md5,
-    #         'slice-md5': ''
-    #     })
-    #     return
+    def upload(self, p_inode, file_path, upload_path):
+        f_size = os.path.getsize(file_path)
+        if f_size == 0:
+            return False
+        slice_size = self.uinfo().slice_size()
+        file_md5s = []
+        with open(file_path, 'rb') as f:
+            res = f.read(slice_size)
+            while res != b'':
+                file_md5 = hashlib.md5(res).hexdigest()
+                file_md5s.append(file_md5)
+                f.seek(f.tell())
+                res = f.read(slice_size)
+        block_list = '["' + '","'.join(file_md5s) + '"]'
+        res = self.__request(BaiDu.PRE_UPLOAD, {}, data='path=%s&size=%s&isdir=0&autoinit=1&rtype=3&block_list=%s' % (
+            upload_path, f_size, block_list), method='POST')
+        if res.get('errno', -1) != 0:
+            return False
+        if res.get('return_type', -1) == 2:
+            return True
+        fs_id = self.__upload_slice(f_size, file_path, slice_size, upload_path, res.get('block_list', []),
+                                    res.get('uploadid', None))
+        if not fs_id:
+            return False
+        self.dir_cache(upload_path[:upload_path.rindex('/')], p_inode, force=True)
+        return fs_id
 
-    def mkdir(self, path):
-        res = self.__request(BaiDu.UPLOAD, {
-            'path': path,
-            'size': 0,
-            'isdir': 1
-        }, method='POST')
-        print(res)
+    def __upload_slice(self, f_size, file_path, slice_size, upload_path, block_list, uploadid):
+        md5s = []
+        block_list = [0] if len(block_list) == 0 else block_list
+        for block in block_list:
+            with open(file_path, 'rb') as f:
+                res = self.__request(BaiDu.UPLOAD_SLICE, {
+                    'method': 'upload',
+                    'type': 'tmpfile',
+                    'path': upload_path,
+                    'uploadid': uploadid,
+                    'partseq': block
+                }, files={'file': f.read(slice_size)}, method='POST')
+                f.seek(f.tell())
+                _md5 = res.get('md5', None)
+                if not _md5:
+                    return False
+                md5s.append(res.get('md5', None))
+        res = self.__request(BaiDu.UPLOAD, params={},
+                             data='path=%s&isdir=0&size=%s&rtype=3&block_list=["%s"]' % (
+                             upload_path, f_size, '","'.join(md5s)),
+                             method='POST')
+        return res.get('fs_id', False)
 
-    def rm(self, *files):
+    def mkdir(self, p_inode, path, name):
+        res = self.__request(BaiDu.UPLOAD, params={}, data='path=%s&isdir=1&rtype=3&block_list=[]' % (path + name),
+                             method='POST')
+        self.dir_cache(path, p_inode, force=True)
+        return res.get('fs_id', None)
+
+    def rm(self, p_inode, name):
+        f = BDFile.get_from_inode_name(p_inode, name)
+        if not f:
+            return
+        self.__rm_with_path(f.path)
+        BDFile.clear_f_cache(p_inode, f)
+        rdx = f.path.rindex('/')
+        path = '/' if rdx == 0 else f.path[:rdx]
+        self.dir_cache(path, p_inode, force=True)
+
+    def __rm_with_path(self, *files):
         _files = 'async=0&filelist=["' + '","'.join(files) + '"]'
         return self.__opera('delete', _files)
 
-    def rename_and_flush(self, path, new_name):
-        self.rename(path, new_name)
-        self.cache.clear()
-        BDFile.clear_cache()
+    def rename(self, p_inode_old, name_old, name_new):
+        f = BDFile.get_from_inode_name(p_inode_old, name_old)
+        path = '/' if p_inode_old == 1 else f.path + '/'
+        self.__rename(path + name_old, name_new)
+        BDFile.clear_f_cache(p_inode_old, f)
+        self.dir_cache(path, p_inode_old, force=True)
 
-    def rename(self, path, new_name):
+    def __rename(self, path, new_name):
         return self.__opera('rename',
                             'async=0&filelist=[{"path":"%s","dest":"%s","newname":"%s","ondup":"newcopy"}]' % (
                                 path, path[path.rindex('/'):], new_name))
 
-    def mv_and_flush(self, path, new_path, new_name=None):
-        self.mv(path, new_path, new_name)
-        self.cache.clear()
-        BDFile.clear_cache()
+    def mv(self, p_inode_old, name_old, p_inode_new, name_new):
+        old_f = BDFile.get_from_inode_name(p_inode_old, name_old)
+        new_path = '/'
+        if p_inode_new == 1:
+            self.__mv_with_path(old_f.path, new_path, name_new)
+        else:
+            new_f = BDFile.get_from_fs_id(p_inode_new)
+            if new_f is not None:
+                new_path = new_f.path
+                self.__mv_with_path(old_f.path, new_path, name_new)
+            BDFile.clear_f_cache(p_inode_new, new_f)
+        BDFile.clear_f_cache(p_inode_old, old_f)
+        rdx = old_f.path.rindex('/')
+        path = '/' if rdx == 0 else old_f.path[:rdx]
+        self.dir_cache(path, p_inode_old, force=True)
+        self.dir_cache(new_path, p_inode_new, force=True)
 
-    def mv(self, path, new_path, new_name=None):
+    def __mv_with_path(self, path, new_path, new_name=None):
         return self.__opera('move',
                             'async=0&filelist=[{"path":"%s","dest":"%s","newname":"%s","ondup":"newcopy"}]' % (
                                 path, new_path, new_name if new_name else path[path.rindex('/'):]
@@ -136,13 +193,6 @@ class BDPanClient:
     def download(self, f, start, size):
         meta = self.info_cache(f.path, f.fs_id)
         return self.__download(meta, start, size)
-        # print(meta.dlink)
-        # print(meta.filename)
-        # print(meta.md5)
-        # print(meta.path)
-        # print(meta.server_ctime)  # 服务器创建时间
-        # print(meta.server_mtime)  # 服务器修改时间
-        # pass
 
     def __download(self, meta, start, size):
         if not meta:
@@ -170,6 +220,7 @@ class BDPanClient:
             '''
             文件大小已经足够,则直接返回需要读取的字节区间
             '''
+            # need_flush(task_info.meta.fs_id, task_info.meta.server_mtime)
             f_size = os.path.getsize(_real_path)
             if f_size >= task_info.meta.size or f_size >= task_info.start + task_info.size:
                 download_map[task_info.meta.fs_id] = None
@@ -213,6 +264,31 @@ class BDPanClient:
                     break
 
 
+# def need_flush(fs_id, mtime):
+#     try:
+#         with open(Env.META_PATH, 'w+t') as f:
+#             res = f.read()
+#             if not res:
+#                 f.write(json.dumps({str(fs_id): mtime}))
+#                 return False
+#             res = json.loads(res)
+#             _mtime = res.get(str(fs_id), None)
+#             if not _mtime:
+#                 res[str(fs_id)] = mtime
+#                 f.write(json.dumps(res))
+#                 return False
+#             if _mtime < mtime:
+#                 res[str(fs_id)] = mtime
+#                 f.write(json.dumps(res))
+#                 node = BDFile.get_from_fs_id(fs_id)
+#                 os.remove(Env.PHYSICS_DIR + '/' + node.filename)
+#                 return True
+#             return False
+#     except FileNotFoundError:
+#         os.makedirs(Env.PHYSICS_WORK_DIR)
+#         need_flush(fs_id, mtime)
+
+
 def read_file(real_path, start, size):
     with open(real_path, 'rb') as f:
         f.seek(start)
@@ -221,6 +297,7 @@ def read_file(real_path, start, size):
 
 if __name__ == '__main__':
     client = BDPanClient()
-    print(client.mkdir('/asd'))
+    # print(client.mkdir('/awdad'))
     # print(client.rm('/aaa.ser'))
     # print(client.rename('/haha.ser', 'payload.ser'))
+    client.upload('/home/wangzhanzhi/work_temp/IMG_20191018_160034.png', '/apps/bdfs/aaa.png')

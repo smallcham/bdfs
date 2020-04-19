@@ -1,15 +1,17 @@
-from model.enum import Env
+from model.enum import Env, BaiDu
+from datetime import datetime
+
+name_pool = {}
+fs_pool = {}
+inode_pool = {}
+inode_name_pool = {}
 
 
 class BDFile:
-    name_pool = {}
-    fs_pool = {}
-    inode_pool = {}
-    inode_name_pool = {}
 
     def __init__(self, privacy=None, category=None, unlist=None, isdir=None, oper_id=None, server_ctime=None,
                  local_mtime=None, size=None, filename=None, filename_bytes=None, share=None, path=None,
-                 local_ctime=None, server_mtime=None,
+                 local_ctime=None, server_mtime=None, p_inode=None,
                  fs_id=None):
         self.privacy = privacy
         self.category = category
@@ -26,8 +28,9 @@ class BDFile:
         self.local_ctime = local_ctime
         self.server_mtime = server_mtime
         self.fs_id = fs_id
-        BDFile.fs_pool[self.fs_id] = self
-        BDFile.name_pool[self.filename] = self
+        self.p_inode = p_inode
+        fs_pool[self.fs_id] = self
+        name_pool[self.filename] = self
 
     @staticmethod
     def from_json(res):
@@ -50,49 +53,57 @@ class BDFile:
                    server_ctime=server_ctime, local_mtime=local_mtime, size=size, filename=filename,
                    filename_bytes=filename_bytes, share=share, path=path, local_ctime=local_ctime,
                    server_mtime=server_mtime, fs_id=fs_id)
-        BDFile.fs_pool[f.fs_id] = f
-        BDFile.name_pool[f.filename] = f
+        fs_pool[f.fs_id] = f
+        name_pool[f.filename] = f
         return f
 
     @staticmethod
     def set_inode(inode, files):
         for f in files:
-            BDFile.name_pool[f.filename] = f
-            BDFile.fs_pool[f.fs_id] = f
-        BDFile.inode_pool[inode] = files
+            name_pool[f.filename] = f
+            fs_pool[f.fs_id] = f
+        inode_pool[inode] = files
 
     @staticmethod
     def get_from_name(name):
-        return BDFile.name_pool.get((name.decode('utf-8') if isinstance(name, bytes) else name), None)
+        return name_pool.get((name.decode('utf-8') if isinstance(name, bytes) else name), None)
 
     @staticmethod
     def get_from_inode(inode):
-        return BDFile.inode_pool.get(inode, None)
+        return inode_pool.get(inode, None)
 
     @staticmethod
     def get_from_inode_name(inode, name):
-        return BDFile.inode_name_pool.get(str(inode) + (name.decode('utf-8') if isinstance(name, bytes) else name), None)
+        return inode_name_pool.get(str(inode) + (name.decode('utf-8') if isinstance(name, bytes) else name),
+                                   None)
 
     @staticmethod
     def get_from_fs_id(fs_id):
-        return BDFile.fs_pool.get(fs_id, None)
+        return fs_pool.get(fs_id, None)
 
     @staticmethod
     def clear_cache():
-        BDFile.fs_pool.clear()
-        BDFile.name_pool.clear()
-        BDFile.inode_name_pool.clear()
-        BDFile.inode_pool.clear()
+        fs_pool.clear()
+        name_pool.clear()
+        inode_name_pool.clear()
+        inode_pool.clear()
+
+    @staticmethod
+    def clear_f_cache(p_inode, f):
+        fs_pool[f.fs_id] = None
+        name_pool[f.filename] = None
+        inode_name_pool[str(p_inode) + f.filename] = None
 
     @staticmethod
     def from_json_list(items, inode=None):
         res = []
         for item in items:
             f = BDFile.from_json(item)
+            f.p_inode = inode
             res.append(f)
-            BDFile.inode_name_pool[str(inode) + f.filename] = f
+            inode_name_pool[str(inode) + f.filename] = f
         inode = 1 if not inode else inode
-        BDFile.inode_pool[inode] = res
+        inode_pool[inode] = res
         return res
 
 
@@ -151,3 +162,39 @@ class BDQuota:
     @staticmethod
     def from_json(res):
         return BDQuota(res.get('total', None), res.get('used', None))
+
+
+class BDUser:
+    user = None
+
+    def __init__(self, baidu_name=None, netdisk_name=None, avatar_url=None, vip_type=None, uk=None):
+        self.baidu_name = baidu_name,
+        self.netdisk_name = netdisk_name
+        self.avatar_url = avatar_url
+        self.vip_type = vip_type  # 0普通用户、1普通会员、2超级会员
+        self.uk = uk
+        self.etime = datetime.now().timestamp() + BaiDu.DIR_EXPIRE_THRESHOLD
+
+    def is_vip(self):
+        return self.vip_type == 1
+
+    def is_svip(self):
+        return self.vip_type == 2
+
+    def slice_size(self):
+        return 33554432 if self.is_svip() else (16777216 if self.is_vip() else 4194304)
+
+    @staticmethod
+    def need_flush():
+        return True if not BDUser.user or BDUser.user.etime < datetime.now().timestamp() else False
+
+    @staticmethod
+    def get_user():
+        return BDUser.user
+
+    @staticmethod
+    def from_json(res):
+        user = BDUser(res.get('baidu_name', None), res.get('netdisk_name', None), res.get('avatar_url', None),
+                      res.get('vip_type', None), res.get('uk', None))
+        BDUser.user = user
+        return BDUser.user

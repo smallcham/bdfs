@@ -10,17 +10,18 @@ import logging
 log = logging.getLogger(__name__)
 
 
-def do_request(url, params, data=None, method='GET', raw=False, headers=None, waterfall=False):
+def do_request(url, params, data=None, method='GET', raw=False, headers=None, waterfall=False, files=None):
     if headers is None:
         headers = {}
     try:
         headers.update({'User-Agent': 'pan.baidu.com'})
-        res = requests.request(method, url, params=params, data=None if not data else data.encode('utf-8'),
-                               headers=headers, stream=waterfall)
+        data = None if not data else data.encode('utf-8')
+        res = requests.request(method, url, params=params, data=data,
+                               headers=headers, stream=waterfall, files=files)
         if res is not None and res.status_code == 403:
             headers.update({'User-Agent': 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Ubuntu Chromium/80.0.3987.163 Chrome/80.0.3987.163 Safari/537.36'})
-            res = requests.request(method, url, params=params, data=None if not data else data.encode('utf-8'),
-                                   headers=headers, stream=waterfall)
+            res = requests.request(method, url, params=params, data=data,
+                                   headers=headers, stream=waterfall, files=files)
         if raw:
             return res
         else:
@@ -28,7 +29,7 @@ def do_request(url, params, data=None, method='GET', raw=False, headers=None, wa
             if res.get('error', '') == 'expired_token' or res.get('error_code', 0) == 31626:
                 stream.print_error('access token is expired or error please reauthorize.')
                 atoken, rtoken, etime = get_token()
-                return do_request(url=url, params=params, method=method, headers={'access_token': atoken})
+                return do_request(url=url, params=params, method=method, headers={'access_token': atoken}, waterfall=waterfall, files=files)
             return res
     except Exception as e:
         log.error(e)
@@ -65,8 +66,8 @@ def get_token(access_token=None, refresh_token=None, expire_time=None):
                     f.write('')
             return get_token(access_token, refresh_token, expire_time)
     except FileNotFoundError as _:
-        if not os.path.isdir(Env.TOKEN_DIR):
-            os.mkdir(Env.TOKEN_DIR)
+        if not os.path.isdir(Env.WORK_DIR):
+            os.mkdir(Env.WORK_DIR)
         f = open(Env.TOKEN_PATH, 'w')
         f.close()
         get_token(access_token, refresh_token, expire_time)
@@ -130,6 +131,6 @@ def r_token(refresh_token):
         return store_token(access_token, refresh_token, expires_in)
 
 
-def request(atoken, rtoken, etime, url, params, data, method='GET', raw=False, headers=None, waterfall=False):
+def request(atoken, rtoken, etime, url, params, data, method='GET', raw=False, headers=None, waterfall=False, files=None):
     params['access_token'] = get_token(atoken, rtoken, etime)[0]
-    return do_request(url, params, data, method, raw, headers, waterfall)
+    return do_request(url, params, data, method, raw, headers, waterfall, files)

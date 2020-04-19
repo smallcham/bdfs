@@ -106,13 +106,14 @@ class Operations(pyfuse3.Operations):
 
         # Insert root directory
         now_ns = int(time() * 1e9)
-        self.cursor.execute("INSERT INTO inodes (id,mode,uid,gid,mtime_ns,atime_ns,ctime_ns) "
-                            "VALUES (?,?,?,?,?,?,?)",
-                            (pyfuse3.ROOT_INODE, stat.S_IFDIR | stat.S_IRUSR | stat.S_IWUSR
-                              | stat.S_IXUSR | stat.S_IRGRP | stat.S_IXGRP | stat.S_IROTH
-                              | stat.S_IXOTH, os.getuid(), os.getgid(), now_ns, now_ns, now_ns))
-        self.cursor.execute("INSERT INTO contents (name, parent_inode, inode) VALUES (?,?,?)",
-                            (b'..', pyfuse3.ROOT_INODE, pyfuse3.ROOT_INODE))
+        for i in range(1, 30):
+            self.cursor.execute("INSERT INTO inodes (id,mode,uid,gid,mtime_ns,atime_ns,ctime_ns) "
+                                "VALUES (?,?,?,?,?,?,?)",
+                                (i, stat.S_IFDIR | stat.S_IRUSR | stat.S_IWUSR
+                                  | stat.S_IXUSR | stat.S_IRGRP | stat.S_IXGRP | stat.S_IROTH
+                                  | stat.S_IXOTH, os.getuid(), os.getgid(), now_ns, now_ns, now_ns))
+            self.cursor.execute("INSERT INTO contents (name, parent_inode, inode) VALUES (?,?,?)",
+                                (str(i).encode('utf-8'), pyfuse3.ROOT_INODE, i))
 
 
     def get_row(self, *a, **kw):
@@ -184,12 +185,13 @@ class Operations(pyfuse3.Operations):
         cursor2.execute("SELECT * FROM contents WHERE parent_inode=? "
                         'AND rowid > ? ORDER BY rowid', (inode, off))
 
+        print('------------------- ' + str(inode) + '-----------' + str(off))
         for row in cursor2:
-            res = pyfuse3.readdir_reply(
+            print(row['name'], row['inode'], row['rowid'])
+            pyfuse3.readdir_reply(
                 token, row['name'], await self.getattr(row['inode']), row['rowid'])
-            print(res)
 
-    async def unlink(self, inode_p, name,ctx):
+    async def unlink(self, inode_p, name, ctx):
         entry = await self.lookup(inode_p, name)
 
         if stat.S_ISDIR(entry.st_mode):
