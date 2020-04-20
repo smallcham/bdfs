@@ -190,6 +190,10 @@ class BDPanClient:
     def quota(self):
         return BDQuota.from_json(self.__request(BaiDu.QUOTA, {}, 'GET'))
 
+    '''
+    从百度云按字节数下载文件
+    如果size为 -1 则表示从start开始下载到最后
+    '''
     def download(self, f, start, size):
         meta = self.info_cache(f.path, f.fs_id)
         return self.__download(meta, start, size)
@@ -244,6 +248,8 @@ class BDPanClient:
             else:
                 _real_start = f_size if (task_info.start < f_size < task_info.size) else task_info.start
                 _real_end = _real_start + (task_info.block if task_info.size < task_info.block else task_info.size)
+            if task_info.size == -1:
+                _real_end = ''
             try:
                 r = self.__request(url=meta.dlink, params={}, method='GET', raw=True, waterfall=True, headers={
                     'Range': 'bytes=%s-%s' % (str(_real_start), str(_real_end))})

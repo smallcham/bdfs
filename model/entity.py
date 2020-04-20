@@ -79,6 +79,16 @@ class BDFile:
                                    None)
 
     @staticmethod
+    def set_inode_name_pool(p_inode, name, f):
+        name = name.decode('utf-8') if isinstance(name, bytes) else name
+        inode_name_pool[str(p_inode) + name] = f
+
+    @staticmethod
+    def del_inode_name_pool(p_inode, name):
+        name = name.decode('utf-8') if isinstance(name, bytes) else name
+        inode_name_pool[str(p_inode) + name] = None
+
+    @staticmethod
     def get_from_fs_id(fs_id):
         return fs_pool.get(fs_id, None)
 
