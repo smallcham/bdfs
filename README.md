@@ -28,7 +28,7 @@
 
 ------
 
-## 使用方法
+## 使用方法（基于Ubuntu，其它Linux系统根据需要请自行修改）
 1. 首先你需要编译 [libfuse](https://github.com/libfuse/libfuse) ，编译方法里面都有, bdfs 是基于fuse实现的虚拟文件系统，所以你必须编译fuse库。
 2. 下载bdfs项目 `git clone https://github.com/smallcham/bdfs.git`
 3. 进入到项目目录安装项目依赖执行 `pip3 install -r requirements.txt -i https://pypi.tuna.tsinghua.edu.cn/simple/` 参数 -i 指定为清华的源，因为国内连pypi实在太慢了
