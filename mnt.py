@@ -150,7 +150,7 @@ class BDfs(pyfuse3.Operations):
             path = '/'
         else:
             f = BDFile.get_from_fs_id(parent_inode)
-            path = f.path
+            path = f.path + '/'
         inode = self.fs.mkdir(parent_inode, path, name.decode('utf-8'))
         if not inode:
             raise pyfuse3.FUSEError(errno.EEXIST)
