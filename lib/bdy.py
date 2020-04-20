@@ -1,13 +1,9 @@
-import os
 from lib._request import *
 from datetime import datetime
 from model.enum import BaiDu, Env
 from model.entity import BDFile, BDMeta, TaskInfo, BDQuota, BDUser
-import uuid
 import logging
 import hashlib
-from urllib3 import encode_multipart_formdata
-import json
 
 log = logging.getLogger(__name__)
 

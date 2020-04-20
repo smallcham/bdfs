@@ -32,7 +32,7 @@ def do_request(url, params, data=None, method='GET', raw=False, headers=None, wa
                 return do_request(url=url, params=params, method=method, headers={'access_token': atoken}, waterfall=waterfall, files=files)
             return res
     except Exception as e:
-        log.error(e)
+        log.error(str(e))
         return None if raw else {}
 
 
@@ -55,6 +55,7 @@ def get_token(access_token=None, refresh_token=None, expire_time=None):
                 stream.print_error('access validate failed! please check your code is right, or you can retry '
                                    'otherwise check you internet')
                 exit(0)
+            stream.print_success('access validate success!')
             return store_token(access_token, refresh_token, expires_in)
         else:
             token = json.loads(token)
@@ -79,8 +80,11 @@ def req_code():
     请求code获取链接，等待用户输入认证code
     :return:
     """
-    webbrowser.open(BaiDu.GET_CODE)
-    stream.print_info('Waiting for browser to open automatically:\n %s\n If is not open, you may need copy this '
+    try:
+        webbrowser.open(BaiDu.GET_CODE)
+    except Exception as _:
+        pass
+    stream.print_info('Waiting for browser to open automatically:\n %s\n If it\'s not open, you may need copy this '
                       'link to your web browser and request it.' % BaiDu.GET_CODE)
     stream.print_info('Please paste access code: \n')
     return input()

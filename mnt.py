@@ -1,7 +1,7 @@
 #!/usr/bin/python3
 import errno
 import stat
-
+from argparse import ArgumentParser
 import pyfuse3
 import trio
 import os
@@ -11,6 +11,7 @@ from datetime import datetime
 from lib.bdy import BDPanClient, download_map
 from model.entity import BDFile, UploadInfo
 from model.enum import Env, BaiDu
+from util import stream
 
 log = logging.getLogger(__name__)
 
@@ -120,7 +121,8 @@ class BDfs(pyfuse3.Operations):
             ns = (datetime.now().timestamp() * 1e9)
             _cache = self.fs.cache.get(path, None)
             _file = BDFile(isdir=False, server_ctime=ns, server_mtime=ns, local_ctime=ns, local_mtime=ns, fs_id=inode,
-                           path=full_path + name, filename=name, filename_bytes=name_bytes, size=0, p_inode=parent_inode)
+                           path=full_path + name, filename=name, filename_bytes=name_bytes, size=0,
+                           p_inode=parent_inode)
             BDFile.set_inode_name_pool(parent_inode, name, _file)
             if not _cache:
                 self.fs.cache[path] = {
@@ -336,17 +338,54 @@ def init_logging(debug=False):
     root_logger.addHandler(handler)
 
 
-if __name__ == '__main__':
-    init_logging(debug=True)
-    fs = BDfs()
-    fuse_options = set(pyfuse3.default_options)
-    fuse_options.add('fsname=bdfs')
-    fuse_options.discard('default_permissions')
-    pyfuse3.init(fs, '/home/wangzhanzhi/test', fuse_options)
+def parse_args():
+    parser = ArgumentParser()
+    parser.add_argument('t', type=str, default='mount', help='操作类型 [operation type] - mount / umount')
+    parser.add_argument('d', type=str, help='挂载路径 [where to mount the system]')
+    return parser.parse_args()
 
-    try:
-        trio.run(pyfuse3.main)
-    except Exception as e:
-        pyfuse3.close(unmount=False)
-        raise
-    pyfuse3.close()
+
+def __touch_pid(mount=0):
+    with open(Env.PID_PATH, 'wt') as f:
+        f.write(str(mount))
+
+
+def __forever():
+    with open(Env.PID_PATH, 'rt') as f:
+        return f.read() == '1'
+
+
+if __name__ == '__main__':
+    options = parse_args()
+    if options.t == 'umount':
+        __touch_pid(0)
+        os.system('sudo umount %s' % options.d)
+        exit(0)
+    else:
+        __touch_pid(1)
+    while True:
+        init_logging(debug=False)
+        os.system('sudo umount %s' % options.d)
+        if not options.d:
+            stream.print_error('请指定挂载目录')
+            exit(0)
+        if os.path.isfile(options.d):
+            stream.print_error('挂载目标 [%s] 是一个文件,无法挂载' % options.d)
+            stream.print_error('Can\'t mount fs on a file [%s]' % options.d)
+            exit(0)
+        if not os.path.isdir(options.d):
+            os.mkdir(options.d)
+        fuse_options = set(pyfuse3.default_options)
+        fuse_options.add('fsname=bdfs')
+        fuse_options.discard('default_permissions')
+        pyfuse3.init(BDfs(), options.d, fuse_options)
+        try:
+            stream.print_success('%s 挂载成功 [mount success]' % options.d)
+            trio.run(pyfuse3.main)
+        except Exception as e:
+            stream.print_error(str(e))
+            log.error(str(e))
+            pyfuse3.close(unmount=True)
+        if not __forever():
+            stream.print_warning('已卸载')
+            exit(0)

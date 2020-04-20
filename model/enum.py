@@ -12,6 +12,7 @@ class Env:
     CLOUD_HOME = '/apps/bdfs'
     TOKEN_PATH = WORK_DIR + '/' + TOKEN_FILE
     META_PATH = PHYSICS_WORK_DIR + '/' + META_FILE
+    PID_PATH = WORK_DIR + '/' + '.pid'
     DEFAULT_BLOCK_SIZE = 5242880  # 必须是512的倍数
     DEFAULT_UPLOAD_BLOCK_SIZE = 5242880
     READ_BLOCK_TIME_OUT = 60  # 读取一个块大小的超时时间（秒）
