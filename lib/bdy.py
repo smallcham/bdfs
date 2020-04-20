@@ -295,11 +295,3 @@ def read_file(real_path, start, size):
     with open(real_path, 'rb') as f:
         f.seek(start)
         return f.read(size)
-
-
-if __name__ == '__main__':
-    client = BDPanClient()
-    # print(client.mkdir('/awdad'))
-    # print(client.rm('/aaa.ser'))
-    # print(client.rename('/haha.ser', 'payload.ser'))
-    client.upload('/home/wangzhanzhi/work_temp/IMG_20191018_160034.png', '/apps/bdfs/aaa.png')
