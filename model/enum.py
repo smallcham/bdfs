@@ -26,10 +26,10 @@ class BaiDu:
     TOKEN_EXPIRE_THRESHOLD = 86400
     DIR_EXPIRE_THRESHOLD = 3600
 
-    # CLIENT_ID = 'Hut06o3KHN8GMGB0gRE0mEWW'
-    # CLIENT_SECRET = 'sLncjFUE84Xflm0LhGUTF8N4VyM5XNav'
-    CLIENT_ID = 'uFBSHEwWE6DD94SQx9z77vgG'
-    CLIENT_SECRET = '7w6wdSFsTk6Vv586r1W1ozHLoDGhXogD'
+    CLIENT_ID = 'Hut06o3KHN8GMGB0gRE0mEWW'
+    CLIENT_SECRET = 'sLncjFUE84Xflm0LhGUTF8N4VyM5XNav'
+    # CLIENT_ID = 'uFBSHEwWE6DD94SQx9z77vgG'
+    # CLIENT_SECRET = '7w6wdSFsTk6Vv586r1W1ozHLoDGhXogD'
     GET_ACCESS_KEY = _BASE_AUTH_URL + 'token'
     SCOPE = 'basic,netdisk'
     GET_CODE = _BASE_AUTH_URL + 'authorize?client_id=' + CLIENT_ID + '&response_type=code&redirect_uri=oob&scope=basic,netdisk'
