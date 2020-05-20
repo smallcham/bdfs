@@ -357,6 +357,8 @@ def __forever():
 
 if __name__ == '__main__':
     options = parse_args()
+    if not os.path.isdir(Env.WORK_DIR):
+        os.makedirs(Env.WORK_DIR)
     if options.t == 'umount':
         __touch_pid(0)
         os.system('sudo umount %s' % options.d)
